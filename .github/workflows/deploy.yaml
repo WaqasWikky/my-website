@@ -1,17 +1,88 @@
-name: Deploy Website
+
+name: Deploy Website to AWS EC2
 
 on:
   push:
     branches:
       - main
 
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   deploy:
+    name: Deploy to EC2
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      # 1. Get the latest repository code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Deploy to EC2
-        run: echo "Deployment workflow is running"
+      # 2. Configure SSH authentication
+      - name: Configure SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+          # Dynamically collect the EC2 SSH host key
+          ssh-keyscan -H -t ed25519 "$EC2_HOST" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      # 3. Connect to EC2 and deploy
+      - name: Deploy Website to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          ssh "$EC2_USER@$EC2_HOST" 'bash -se' <<'REMOTE'
+
+            set -e
+
+            echo "Connected to EC2 successfully"
+
+            # Navigate to project directory
+            cd /home/ubuntu/AntonX/my-website
+
+            # Pull latest code from GitHub
+            echo "Pulling latest code..."
+            git pull --ff-only origin main
+
+            # Build Docker image
+            echo "Building Docker image..."
+            docker build -t my-website:latest .
+
+            # Stop and remove old container
+            echo "Removing old container..."
+            docker rm -f my-website || true
+
+            # Start new container
+            echo "Starting new container..."
+            docker run -d \
+              --name my-website \
+              --restart unless-stopped \
+              -p 3000:3000 \
+              my-website:latest
+
+            # Wait for application startup
+            sleep 3
+
+            # Verify deployment
+            echo "Checking application health..."
+            curl --fail http://127.0.0.1:3000/api/health
+
+            echo ""
+            echo "Deployment successful!"
+
+            # Display running container
+            docker ps --filter name=my-website
+
+          REMOTE
